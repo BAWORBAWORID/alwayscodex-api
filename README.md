@@ -56,61 +56,129 @@ run();
 
 ---
 
-## ⚡ Real-Time Streaming (`SSE`) & Agent API (`/v1/chat/completions`)
+## 🔑 Cara Pemakaian: Tanpa API Key vs Dengan API Key
 
-Modul ini memiliki dukungan penuh terhadap **Server-Sent Events (`text/event-stream`)** dan **Agent API** (`/v1/models` & `/v1/chat/completions`). Anda bisa menerima teks chunk demi chunk secara *real-time*.
+Modul ini sangat fleksibel dan dapat digunakan baik untuk endpoint gratis biasa maupun endpoint premium/admin yang memerlukan otorisasi **API Key**:
 
-### 1. Menggunakan `codex.stream()` (AsyncGenerator)
+### 1. Tanpa API Key (`No API Key` — untuk Endpoint Umum / Gratis)
+Anda dapat langsung memanggil kategori & aksi apapun tanpa perlu setup otorisasi:
 ```javascript
-const codex = require('alwayscodex-api');
-const api = codex({ apiKey: 'YOUR_API_KEY' });
+import codex from "alwayscodex-api";
 
-async function chatStream() {
-  const stream = api.stream('/v1/chat/completions', {
-    model: 'cutad-agent',
-    messages: [{ role: 'user', content: 'Buatkan puisi pendek.' }],
-    stream: true
-  });
+async function testFree() {
+  // Langsung panggil AI, Downloader, atau Maker gratis
+  const ai = await codex.ai.deepseek("Halo, siapa presiden pertama Indonesia?");
+  console.log("✔ Respons AI:", ai);
 
-  for await (const chunk of stream) {
-    if (chunk.choices?.[0]?.delta?.content) {
-      process.stdout.write(chunk.choices[0].delta.content);
-    }
-  }
+  const tiktok = await codex.downloader.tiktok("https://vt.tiktok.com/ZSjRk1D8X/");
+  console.log("✔ Video TikTok URL:", tiktok.result?.video);
 }
-chatStream();
+testFree();
 ```
 
-### 2. Menggunakan Callback `onChunk`
+### 2. Dengan API Key (`With API Key` — untuk Endpoint Premium / Admin)
+Untuk endpoint premium seperti **`am.bulk`**, **`imagehd.super_resolution`**, **`payment.pakasir`**, atau manajemen admin, cukup passing parameter `apiKey` saat menginisialisasi `codex(...)`:
 ```javascript
-await codex.agent.chatCompletions({
-  model: 'cutad-agent',
-  messages: [{ role: 'user', content: 'Halo' }],
-  stream: true
-}, {
-  onChunk: (chunk) => {
-    process.stdout.write(chunk.choices?.[0]?.delta?.content || '');
-  }
-});
+import codex from "alwayscodex-api";
+
+// Inisialisasi dengan API Key Premium / Admin Anda (kosongkan atau ganti dengan key Anda)
+const api = codex({ apiKey: "YOUR_API_KEY" });
+
+async function testPremium() {
+  // 1. Memanggil AlightMotion Bulk Email Generator (Premium)
+  const bulk = await api.am.bulk(1); // Atau api.am.bulk({ count: 1 })
+  console.log("✔ Email AM:", bulk.result.email);
+  console.log("✔ Link Inbox:", bulk.result.inboxUrl);
+
+  // 2. Memanggil Super Resolution Image HD Upscaler (Premium)
+  const hdBuffer = await api.imagehd.super_resolution("https://cdn.yupra.my.id/yp/7ihn1v2f.jpg");
+  console.log("✔ Ukuran Gambar HD:", hdBuffer.length, "bytes");
+}
+testPremium();
 ```
 
 ---
 
-## 🖼️ Penanganan Respons Binary (Gambar/Audio/Video/File)
+## 🎨 4 Gaya Pemanggilan Fleksibel (`v1.0.2+`)
 
-Modul `alwayscodex-api` dilengkapi dengan detektor `Content-Type` otomatis.  
-Jika sebuah endpoint mengembalikan data biner (seperti gambar **JPG/PNG/WEBP**, audio **MP3/WAV**, video **MP4**, atau file **ZIP/PDF**), SDK langsung mengembalikan object **Node.js `Buffer`** siap pakai!
+SDK dilengkapi dengan **Smart Name Normalizer**. Anda bebas menuliskan nama action dalam **4 gaya berbeda** dan semuanya otomatis terhubung ke endpoint yang tepat (`No more SyntaxError`!):
 
 ```javascript
-const fs = require('fs');
-const codex = require('alwayscodex-api');
+import codex from "alwayscodex-api";
 
-async function generateAndSave() {
-  const imageBuffer = await codex.canvas.brat('Hello AlwaysCodex');
-  fs.writeFileSync('output_brat.png', imageBuffer);
-  console.log('✔ Gambar berhasil disimpan sebagai output_brat.png');
+async function testSyntax() {
+  // 1. Gaya Langsung (Direct Category call)
+  const res1 = await codex.imagehd("https://cdn.yupra.my.id/yp/7ihn1v2f.jpg");
+
+  // 2. Gaya Underscore (snake_case)
+  const res2 = await codex.imagehd.super_resolution("https://cdn.yupra.my.id/yp/7ihn1v2f.jpg");
+
+  // 3. Gaya CamelCase (superResolution / fakeNotif)
+  const res3 = await codex.maker.fakeNotif({ name: "Codex", message: "Hello!" });
+
+  // 4. Gaya Bracket Notation (dengan Spasi atau Hyphen)
+  const res4 = await codex.maker["fake notif"]({ name: "Codex", message: "Hello!" });
+  const res5 = await codex.maker["fake-notif-wa"]({ name: "Codex", message: "Hello!" });
 }
-generateAndSave();
+```
+
+---
+
+## 📦 Handling Respons: JSON vs Image vs Video/Audio
+
+Modul `alwayscodex-api` memiliki **detektor `Content-Type` cerdas di balik layar**. Anda tidak perlu pusing membedakan cara mengambil `res.json()` atau `res.arrayBuffer()`, karena SDK akan otomatis mengembalikan format data yang tepat:
+
+### 1. Contoh Respons JSON (`Object / Array`)
+Jika endpoint mengembalikan data teks / JSON (seperti AI, Downloader, Search, Tools):
+```javascript
+const res = await codex.ai.gpt4("Apa ibukota Jepang?");
+/* Respons JSON Otomatis:
+{
+  "statusCode": 200,
+  "result": "Ibukota Jepang adalah Tokyo."
+}
+*/
+console.log(res.result);
+```
+
+### 2. Contoh Respons Gambar / Image (`Buffer JPG / PNG / WEBP`)
+Jika endpoint menghasilkan gambar (seperti **Canvas**, **Maker**, **Image HD**, **Anime**), SDK langsung mengembalikan **Node.js `Buffer`** yang bisa langsung disimpan ke file atau dikirim ke Bot Telegram/WhatsApp:
+```javascript
+import fs from "fs";
+import codex from "alwayscodex-api";
+
+async function saveImage() {
+  // Mengambil gambar meme dari Canvas / Maker
+  const imageBuffer = await codex.maker.fakenotif({
+    name: "Bot WhatsApp",
+    message: "Halo, jangan lupa makan ya 💕"
+  });
+
+  // Karena responsnya adalah Buffer, kita bisa langsung save atau kirim!
+  fs.writeFileSync("fakenotif.jpg", imageBuffer);
+  console.log("✔ Gambar berhasil disimpan, ukuran:", imageBuffer.length, "bytes");
+}
+saveImage();
+```
+
+### 3. Contoh Respons Video & Audio (`Buffer MP4 / MP3 / WAV`)
+Jika endpoint mengembalikan media audio atau video secara langsung (seperti **Wink HD Video**, **TTS / Sound Engine**, **Media Downloader Buffer**):
+```javascript
+import fs from "fs";
+import codex from "alwayscodex-api";
+
+async function saveMedia() {
+  // Contoh menerima respons binary Video MP4 / Audio MP3
+  const mediaBuffer = await codex.hdvidio["wink-hd-video"]({
+    url: "https://example.com/sample.mp4"
+  });
+
+  if (Buffer.isBuffer(mediaBuffer)) {
+    fs.writeFileSync("output_video.mp4", mediaBuffer);
+    console.log("✔ Video MP4 berhasil disimpan berukuran:", (mediaBuffer.length / 1024 / 1024).toFixed(2), "MB");
+  }
+}
+saveMedia();
 ```
 
 ---

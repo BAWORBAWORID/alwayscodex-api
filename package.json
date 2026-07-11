@@ -1,6 +1,6 @@
 {
   "name": "alwayscodex-api",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Official Node.js & ESM SDK for AlwaysCodex REST API (https://api.alwayscodex.my.id) with automatic endpoint & category syncing",
   "main": "index.js",
   "module": "index.mjs",

@@ -55,19 +55,43 @@ class AlwaysCodex {
         if (typeof prop === 'symbol' || prop.startsWith('_')) {
           return Reflect.get(target, prop, receiver);
         }
-        if (prop in target && typeof target[prop] !== 'object') {
-          const val = Reflect.get(target, prop, receiver);
-          return typeof val === 'function' ? val.bind(target) : val;
+        if (typeof target[prop] === 'function' && ['request', 'get', 'post', 'put', 'delete', 'patch', 'options', 'head', 'stream', 'upload', 'upload2', 'syncEndpoints', '_normalizeParams', '_initPredefinedHelpers'].includes(prop)) {
+          return target[prop].bind(target);
+        }
+        if (prop in target && typeof target[prop] !== 'object' && typeof target[prop] !== 'function') {
+          return Reflect.get(target, prop, receiver);
         }
 
-        // Dynamic category helper proxy (wraps both predefined objects like target.ai and unlisted categories)
-        if (!target[prop] || typeof target[prop] === 'object') {
-          if (!target[prop]) target[prop] = {};
+        // Dynamic category helper proxy (wraps both predefined objects and unlisted categories as callable functions)
+        if (!target[prop] || typeof target[prop] === 'object' || typeof target[prop] === 'function') {
+          if (!target[prop] || typeof target[prop] !== 'function') {
+            const existingObj = target[prop] || {};
+            const catFunc = function categoryCallableProxy() {};
+            Object.assign(catFunc, existingObj);
+            target[prop] = catFunc;
+          }
           return new Proxy(target[prop], {
             get: (catTarget, action) => {
+              if (typeof action === 'symbol' || action === 'prototype') {
+                return Reflect.get(catTarget, action);
+              }
+              const normalizedAction = typeof action === 'string'
+                ? action.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/[_ ]+/g, '-').toLowerCase()
+                : action;
+              const cleanAction = typeof action === 'string'
+                ? action.replace(/[-_ ]+/g, '').toLowerCase()
+                : action;
+
+              if (normalizedAction in catTarget && typeof catTarget[normalizedAction] !== 'undefined') {
+                return catTarget[normalizedAction];
+              }
+              if (cleanAction in catTarget && typeof catTarget[cleanAction] !== 'undefined') {
+                return catTarget[cleanAction];
+              }
               if (action in catTarget && typeof catTarget[action] !== 'undefined') {
                 return catTarget[action];
               }
+
               return async (params = {}, reqOptions = {}) => {
                 // Embedded auto-sync wait so developer NEVER has to write `await codex.syncPromise`
                 if (target.autoSync && !target._synced && target.syncPromise) {
@@ -79,14 +103,52 @@ class AlwaysCodex {
                 }
 
                 // If concrete method was added after sync, invoke it directly
-                if (action in catTarget && typeof catTarget[action] === 'function') {
-                  return catTarget[action](params, reqOptions);
+                if (normalizedAction in catTarget && typeof catTarget[normalizedAction] === 'function') {
+                  return catTarget[normalizedAction](params, reqOptions);
+                }
+                if (cleanAction in catTarget && typeof catTarget[cleanAction] === 'function') {
+                  return catTarget[cleanAction](params, reqOptions);
                 }
 
-                const normalizedParams = target._normalizeParams(prop, action, params);
-                const endpointPath = `/api/${prop}/${action}`;
+                let finalAction = normalizedAction;
+                if (target.endpoints[prop] && target.endpoints[prop][cleanAction] && !target.endpoints[prop][normalizedAction]) {
+                  finalAction = cleanAction;
+                }
+                const normalizedParams = target._normalizeParams(prop, finalAction, params);
+                const endpointPath = `/api/${prop}/${finalAction}`;
                 return target.request(endpointPath, normalizedParams, reqOptions);
               };
+            },
+            apply: async (catTarget, thisArg, argArray) => {
+              const params = argArray[0] || {};
+              const reqOptions = argArray[1] || {};
+
+              if (target.autoSync && !target._synced && target.syncPromise) {
+                await target.syncPromise.catch(() => {});
+              }
+              if (target.autoSync && !target._synced) {
+                target._synced = true;
+                await target.syncEndpoints().catch(() => {});
+              }
+
+              const categoryDefaults = {
+                ai: 'deepseek-v3',
+                imagehd: 'super-resolution',
+                downloader: 'tiktokv3',
+                canvas: 'brat',
+                tools: 'proxy',
+                maker: 'twobuttons'
+              };
+
+              const defaultAction = categoryDefaults[prop] || Object.keys(catTarget).find(k => typeof catTarget[k] === 'function' && k !== 'prototype') || 'super-resolution';
+
+              if (defaultAction in catTarget && typeof catTarget[defaultAction] === 'function') {
+                return catTarget[defaultAction](params, reqOptions);
+              }
+
+              const normalizedParams = target._normalizeParams(prop, defaultAction, params);
+              const endpointPath = `/api/${prop}/${defaultAction}`;
+              return target.request(endpointPath, normalizedParams, reqOptions);
             }
           });
         }
@@ -582,7 +644,10 @@ const exportedCodex = new Proxy(codexFactory, {
     if (prop === 'AlwaysCodex') return AlwaysCodex;
     if (prop === 'AlwaysCodexError') return AlwaysCodexError;
     const val = Reflect.get(defaultInstance, prop, receiver);
-    return typeof val === 'function' ? val.bind(defaultInstance) : val;
+    if (typeof val === 'function' && ['request', 'get', 'post', 'put', 'delete', 'patch', 'options', 'head', 'stream', 'upload', 'upload2', 'syncEndpoints'].includes(prop)) {
+      return val.bind(defaultInstance);
+    }
+    return val;
   },
   apply: (target, thisArg, argumentsList) => {
     return codexFactory(...argumentsList);

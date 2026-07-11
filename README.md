@@ -8,10 +8,6 @@ A lightweight, zero-dependency, universal JavaScript client supporting AI models
 ## 📦 Installation
 
 ```bash
-# Install directly via Git/GitHub
-npm install github:BAWORBAWORID/alwayscodex-api
-
-# Or install via npm (once published)
 npm install alwayscodex-api
 ```
 

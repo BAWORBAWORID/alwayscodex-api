@@ -1,0 +1,531 @@
+/**
+ * @file client.js
+ * @description Core Universal SDK Client for AlwaysCodex REST API (https://api.alwayscodex.my.id)
+ * Supports CJS and ESM environments natively, with auto-syncing of all categories & endpoints from openapi.json, binary media Buffer handling, and real-time SSE streaming (Agent API / Chat Completions).
+ */
+
+class AlwaysCodexError extends Error {
+  /**
+   * @param {string} message - Error message
+   * @param {number} [status] - HTTP status code
+   * @param {any} [data] - Error response payload
+   */
+  constructor(message, status = null, data = null) {
+    super(message);
+    this.name = 'AlwaysCodexError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
+class AlwaysCodex {
+  /**
+   * Initialize AlwaysCodex API Client
+   * @param {Object} [options={}] - Configuration options
+   * @param {string} [options.apiKey=null] - Your AlwaysCodex API Key (optional for free endpoints)
+   * @param {string} [options.baseURL='https://api.alwayscodex.my.id'] - Base API URL
+   * @param {number} [options.timeout=30000] - Request timeout in milliseconds
+   * @param {boolean} [options.autoSync=true] - Automatically sync available endpoints on first call
+   */
+  constructor(options = {}) {
+    if (typeof options === 'string') {
+      options = { apiKey: options };
+    }
+    this.apiKey = options.apiKey || options.apikey || null;
+    this.baseURL = (options.baseURL || 'https://api.alwayscodex.my.id').replace(/\/+$/, '');
+    this.timeout = options.timeout || 30000;
+    this.autoSync = options.autoSync !== false;
+
+    this.categories = new Set();
+    this.endpoints = {};
+    this.apiMetadata = {};
+    this._synced = false;
+
+    // Attach predefined standard helper methods right away
+    this._initPredefinedHelpers();
+
+    // Automatically sync and load all endpoints from openapi.json at startup
+    if (this.autoSync) {
+      this.syncPromise = this.syncEndpoints().catch(() => {});
+    }
+  }
+
+  /**
+   * Smart parameter normalizer so string/number arguments or { text: "..." } objects satisfy any endpoint's expected parameter names
+   */
+  _normalizeParams(category, action, params) {
+    if (action === 'password-generator') {
+      const lengthVal = typeof params === 'number' || typeof params === 'string' ? Number(params) || 16 : (params.length || 16);
+      return typeof params === 'object' && params !== null ? { includeUppercase: 'true', includeLowercase: 'true', includeNumbers: 'true', includeSymbols: 'true', length: lengthVal, ...params } : { includeUppercase: 'true', includeLowercase: 'true', includeNumbers: 'true', includeSymbols: 'true', length: lengthVal };
+    }
+
+    const metaKey = `${category}/${action}`;
+    const primaryParam = this.apiMetadata[metaKey]?.params?.[0];
+
+    if (typeof params === 'string' || typeof params === 'number') {
+      const aliases = { teks: params, text: params, q: params, query: params, prompt: params, url: params, link: params, target: params };
+      if (primaryParam && !aliases[primaryParam]) {
+        aliases[primaryParam] = params;
+      }
+
+      if (category === 'ai' || category === 'canvas' || category === 'maker' || category === 'primbon' || category === 'search') {
+        return { teks: params, text: params, q: params, query: params, prompt: params, ...aliases };
+      } else if (category === 'downloader' || category === 'stalker') {
+        return { url: params, link: params, q: params, ...aliases };
+      } else if (category === 'tools' && (action === 'spam-otp' || action === 'proxy' || action === 'proxy2')) {
+        return action === 'spam-otp' ? { target: params, nomor: params, phone: params } : { url: params, target: params };
+      } else {
+        return aliases;
+      }
+    } else if (typeof params === 'object' && params !== null && !(typeof FormData !== 'undefined' && params instanceof FormData)) {
+      const textVal = params.teks || params.text || params.q || params.query || params.prompt;
+      if (textVal !== undefined) {
+        const enhanced = { teks: textVal, text: textVal, q: textVal, query: textVal, prompt: textVal, ...params };
+        if (primaryParam && !enhanced[primaryParam]) enhanced[primaryParam] = textVal;
+        return enhanced;
+      }
+      const urlVal = params.url || params.link;
+      if (urlVal !== undefined) {
+        const enhanced = { url: urlVal, link: urlVal, ...params };
+        if (primaryParam && !enhanced[primaryParam]) enhanced[primaryParam] = urlVal;
+        return enhanced;
+      }
+      return params;
+    }
+    return params || {};
+  }
+
+  /**
+   * Automatically fetch and register all online endpoints and categories dynamically from server openapi.json (or configuration)
+   */
+  async syncEndpoints() {
+    try {
+      let endpointsList = [];
+      try {
+        const openapi = await this.request('/openapi.json', {}, { method: 'GET' });
+        if (openapi && Array.isArray(openapi.endpoints)) {
+          endpointsList = openapi.endpoints;
+        }
+      } catch (e) {
+        const config = await this.request('/configuration', {}, { method: 'GET' });
+        const endpointsMap = config.endpointsStatus || config.endpoints || {};
+        for (const [path, status] of Object.entries(endpointsMap)) {
+          endpointsList.push({ route: path, status });
+        }
+      }
+
+      for (const item of endpointsList) {
+        const path = item.route;
+        if (!path || !path.startsWith('/api/')) continue;
+        const parts = path.split('/').filter(Boolean); // ['api', 'category', 'action']
+        if (parts.length < 3) continue;
+        
+        const category = parts[1];
+        const action = parts.slice(2).join('/');
+        const metaKey = `${category}/${action}`;
+        
+        this.categories.add(category);
+        if (!this.endpoints[category]) this.endpoints[category] = {};
+        this.endpoints[category][action] = item;
+        this.apiMetadata[metaKey] = item;
+
+        if (!this[category]) this[category] = {};
+        if (!this[category][action]) {
+          this[category][action] = async (params = {}, reqOptions = {}) => {
+            const normalizedParams = this._normalizeParams(category, action, params);
+            const method = reqOptions.method || (item.methods && item.methods.includes('POST') && !item.methods.includes('GET') ? 'POST' : 'GET');
+            return this.request(path, normalizedParams, { ...reqOptions, method });
+          };
+        }
+      }
+      this._synced = true;
+      return { categories: Array.from(this.categories), endpoints: this.endpoints };
+    } catch (err) {
+      return { categories: Array.from(this.categories), endpoints: this.endpoints };
+    }
+  }
+
+  /**
+   * Send GET request to AlwaysCodex API
+   */
+  async get(endpoint, params = {}, options = {}) {
+    return this.request(endpoint, params, { ...options, method: 'GET' });
+  }
+
+  /**
+   * Send POST request to AlwaysCodex API
+   */
+  async post(endpoint, body = {}, options = {}) {
+    return this.request(endpoint, body, { ...options, method: 'POST' });
+  }
+
+  /**
+   * Send OPTIONS request to AlwaysCodex API (for proxy tools & CORS preflight checks)
+   */
+  async options(endpoint, params = {}, options = {}) {
+    return this.request(endpoint, params, { ...options, method: 'OPTIONS' });
+  }
+
+  /**
+   * Send PUT request to AlwaysCodex API
+   */
+  async put(endpoint, body = {}, options = {}) {
+    return this.request(endpoint, body, { ...options, method: 'PUT' });
+  }
+
+  /**
+   * Send DELETE request to AlwaysCodex API
+   */
+  async delete(endpoint, params = {}, options = {}) {
+    return this.request(endpoint, params, { ...options, method: 'DELETE' });
+  }
+
+  /**
+   * Send PATCH request to AlwaysCodex API
+   */
+  async patch(endpoint, body = {}, options = {}) {
+    return this.request(endpoint, body, { ...options, method: 'PATCH' });
+  }
+
+  /**
+   * Send HEAD request to AlwaysCodex API
+   */
+  async head(endpoint, params = {}, options = {}) {
+    return this.request(endpoint, params, { ...options, method: 'HEAD' });
+  }
+
+  /**
+   * Stream Server-Sent Events (SSE) or chunked responses in real-time (e.g. for Agent API / v1/chat/completions)
+   * Returns an AsyncGenerator yielding parsed chunks as they arrive.
+   * @param {string} endpoint - API endpoint (e.g. '/api/v1/chat/completions')
+   * @param {Object} [params={}] - Request body or query parameters (stream: true is injected automatically)
+   * @param {Object} [options={}] - Request options
+   * @yields {Object|string} Parsed JSON chunk or raw text from the stream
+   */
+  async *stream(endpoint, params = {}, options = {}) {
+    let path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    if (path.startsWith('/api/v1/')) {
+      path = path.replace('/api/v1/', '/v1/');
+    }
+    const isFormData = (typeof FormData !== 'undefined' && params instanceof FormData) || (params && params[Symbol.toStringTag] === 'FormData');
+    let queryParams = isFormData ? params : { ...params, stream: true };
+    
+    let url = `${this.baseURL}${path}`;
+    const method = (options.method || 'POST').toUpperCase();
+    const headers = {
+      'Accept': 'text/event-stream, application/json, */*',
+      'User-Agent': 'AlwaysCodex-SDK/1.0.0 (Node.js)',
+      ...options.headers
+    };
+    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+    if (!headers['Content-Type'] && !isFormData) headers['Content-Type'] = 'application/json';
+
+    const fetchOptions = {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' ? null : (isFormData ? queryParams : JSON.stringify(queryParams))
+    };
+
+    if (method === 'GET' || method === 'HEAD') {
+      const searchParams = new URLSearchParams();
+      if (!isFormData && typeof queryParams === 'object') {
+        for (const [key, val] of Object.entries(queryParams)) {
+          if (val !== undefined && val !== null) searchParams.append(key, String(val));
+        }
+      }
+      const qs = searchParams.toString();
+      if (qs) url += `${url.includes('?') ? '&' : '?'}${qs}`;
+    }
+
+    const response = await fetch(url, fetchOptions);
+    if (!response.ok) {
+      const errText = await response.text();
+      let errJson = null;
+      try { errJson = JSON.parse(errText); } catch {}
+      const errMsg = errJson ? (typeof errJson.error === 'object' && errJson.error ? errJson.error.message || JSON.stringify(errJson.error) : errJson.message || errJson.error || JSON.stringify(errJson)) : errText || response.statusText;
+      throw new AlwaysCodexError(`Stream Request Failed: ${errMsg} (${response.status})`, response.status, errJson);
+    }
+
+    if (!response.body) {
+      throw new AlwaysCodexError('ReadableStream response.body is not available in this runtime.', response.status);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunkText = decoder ? decoder.decode(value, { stream: true }) : (typeof Buffer !== 'undefined' ? Buffer.from(value).toString('utf8') : String(value));
+        buffer += chunkText;
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop(); // Keep last incomplete line
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          if (trimmed.startsWith('data: ')) {
+            const dataStr = trimmed.slice(6).trim();
+            if (dataStr === '[DONE]') return;
+            try {
+              yield JSON.parse(dataStr);
+            } catch {
+              yield dataStr;
+            }
+          } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            try {
+              yield JSON.parse(trimmed);
+            } catch {
+              yield trimmed;
+            }
+          } else {
+            yield trimmed;
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /**
+   * Upload file to AlwaysCodex Tourl API (/api/tools/upload)
+   */
+  async upload(fileInput, options = {}) {
+    return this._uploadHelper('/api/tools/upload', fileInput, options);
+  }
+
+  /**
+   * Upload file to AlwaysCodex Tourl API v2 (/api/tools/upload2)
+   */
+  async upload2(fileInput, options = {}) {
+    return this._uploadHelper('/api/tools/upload2', fileInput, options);
+  }
+
+  /**
+   * Internal Helper for handling multipart/form-data file uploads seamlessly across Node.js and browser
+   */
+  async _uploadHelper(endpoint, fileInput, options = {}) {
+    let formData;
+    const isFormData = (typeof FormData !== 'undefined' && fileInput instanceof FormData) || (fileInput && fileInput[Symbol.toStringTag] === 'FormData');
+    
+    if (isFormData) {
+      formData = fileInput;
+    } else {
+      formData = typeof FormData !== 'undefined' ? new FormData() : null;
+      if (!formData) {
+        throw new AlwaysCodexError('FormData is not available in this JavaScript runtime environment.');
+      }
+
+      let blobOrFile = fileInput;
+      let filename = options.filename || 'upload.bin';
+
+      if (typeof fileInput === 'string') {
+        if (typeof process !== 'undefined' && typeof require === 'function') {
+          try {
+            const fs = require('fs');
+            const path = require('path');
+            if (fs.existsSync(fileInput)) {
+              const buffer = fs.readFileSync(fileInput);
+              filename = options.filename || path.basename(fileInput);
+              blobOrFile = new Blob([buffer]);
+            }
+          } catch (e) {
+            blobOrFile = new Blob([fileInput]);
+          }
+        } else {
+          blobOrFile = new Blob([fileInput]);
+        }
+      } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(fileInput)) {
+        blobOrFile = new Blob([fileInput]);
+      } else if (fileInput instanceof Uint8Array || fileInput instanceof ArrayBuffer) {
+        blobOrFile = new Blob([fileInput]);
+      }
+
+      formData.append('file', blobOrFile, filename);
+      if (options.exp !== undefined) formData.append('exp', String(options.exp));
+      if (options.unit !== undefined) formData.append('unit', String(options.unit));
+    }
+
+    return this.request(endpoint, formData, { ...options, method: 'POST' });
+  }
+
+  /**
+   * Send HTTP request to AlwaysCodex API
+   */
+  async request(endpoint, params = {}, options = {}) {
+    let path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    if (path.startsWith('/api/v1/')) {
+      path = path.replace('/api/v1/', '/v1/');
+    }
+    const method = (options.method || 'GET').toUpperCase();
+    
+    const isFormData = (typeof FormData !== 'undefined' && params instanceof FormData) || (params && params[Symbol.toStringTag] === 'FormData');
+
+    let queryParams = isFormData ? params : { ...params };
+    if (!isFormData && this.apiKey && !queryParams.apikey && !queryParams.apiKey) {
+      queryParams.apikey = this.apiKey;
+    }
+
+    let url = `${this.baseURL}${path}`;
+    const headers = {
+      'Accept': 'application/json, image/*, */*',
+      'User-Agent': 'AlwaysCodex-SDK/1.0.0 (Node.js)',
+      ...options.headers
+    };
+
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
+
+    const fetchOptions = {
+      method,
+      headers
+    };
+
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS' || (method === 'DELETE' && !options.body)) {
+      const searchParams = new URLSearchParams();
+      if (!isFormData && typeof queryParams === 'object') {
+        for (const [key, val] of Object.entries(queryParams)) {
+          if (val !== undefined && val !== null) {
+            searchParams.append(key, String(val));
+          }
+        }
+      }
+      const queryString = searchParams.toString();
+      if (queryString) {
+        url += `${url.includes('?') ? '&' : '?'}${queryString}`;
+      }
+    } else {
+      if (isFormData) {
+        delete headers['Content-Type'];
+        fetchOptions.body = queryParams;
+      } else {
+        if (!headers['Content-Type']) {
+          headers['Content-Type'] = 'application/json';
+        }
+        fetchOptions.body = typeof queryParams === 'string' ? queryParams : JSON.stringify(queryParams);
+      }
+    }
+
+    // If options.stream is true or options.onChunk callback is passed, delegate to streaming loop
+    if (options.stream || options.onChunk || (typeof queryParams === 'object' && queryParams.stream === true && options.onChunk)) {
+      const streamGen = this.stream(endpoint, params, options);
+      if (options.onChunk) {
+        for await (const chunk of streamGen) {
+          options.onChunk(chunk);
+        }
+        return { status: true, stream: true, message: 'Stream finished' };
+      }
+      return streamGen;
+    }
+
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    let timeoutId = null;
+    if (controller) {
+      fetchOptions.signal = controller.signal;
+      timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    }
+
+    try {
+      const response = await fetch(url, fetchOptions);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      const contentType = response.headers.get('content-type') || '';
+      let result;
+
+      // Handle SSE streams returned without explicit options.stream flag
+      if (contentType.includes('text/event-stream')) {
+        return this.stream(endpoint, params, options);
+      } else if (contentType.includes('application/json')) {
+        result = await response.json();
+      } else if (
+        contentType.includes('image/') ||
+        contentType.includes('audio/') ||
+        contentType.includes('video/') ||
+        contentType.includes('application/octet-stream') ||
+        contentType.includes('application/pdf') ||
+        contentType.includes('application/zip') ||
+        contentType.includes('application/x-zip') ||
+        contentType.includes('application/gzip') ||
+        contentType.includes('font/') ||
+        contentType.includes('model/')
+      ) {
+        const arrayBuffer = await response.arrayBuffer();
+        result = typeof Buffer !== 'undefined' ? Buffer.from(arrayBuffer) : arrayBuffer;
+      } else {
+        const text = await response.text();
+        try {
+          result = JSON.parse(text);
+        } catch {
+          result = text;
+        }
+      }
+
+      if (!response.ok) {
+        const errMsg = typeof result === 'object' && result ? (result.message || result.error || response.statusText) : response.statusText;
+        throw new AlwaysCodexError(`API Request Failed: ${errMsg} (${response.status})`, response.status, result);
+      }
+
+      return result;
+    } catch (err) {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        throw new AlwaysCodexError(`Request timeout exceeded after ${this.timeout}ms for ${url}`, 408);
+      }
+      if (err instanceof AlwaysCodexError) throw err;
+      throw new AlwaysCodexError(`Network Error: ${err.message}`, null, err);
+    }
+  }
+
+  _initPredefinedHelpers() {
+    this.ai = {
+      gpt4: (q, options) => this.request('/api/ai/gpt4', this._normalizeParams('ai', 'gpt4', q), options),
+      gemini: (q, options) => this.request('/api/ai/gemini', this._normalizeParams('ai', 'gemini', q), options),
+      geminiPro: (q, options) => this.request('/api/ai/gemini-pro', this._normalizeParams('ai', 'gemini-pro', q), options),
+      geminiFlash: (q, options) => this.request('/api/ai/gemini-flash', this._normalizeParams('ai', 'gemini-flash', q), options),
+      deepseek: (q, options) => this.request('/api/ai/deepseek-v3', this._normalizeParams('ai', 'deepseek-v3', q), options),
+      claude: (q, options) => this.request('/api/ai/claude-v2', this._normalizeParams('ai', 'claude-v2', q), options)
+    };
+    this.downloader = {
+      tiktok: (url, options) => this.request('/api/downloader/tiktokv3', this._normalizeParams('downloader', 'tiktokv3', url), options),
+      youtube: (url, options) => this.request('/api/downloader/youtube3', this._normalizeParams('downloader', 'youtube3', url), options),
+      spotify: (url, options) => this.request('/api/downloader/spotify', this._normalizeParams('downloader', 'spotify', url), options)
+    };
+    this.tools = {
+      upload: (fileInput, options = {}) => this.upload(fileInput, options),
+      upload2: (fileInput, options = {}) => this.upload2(fileInput, options),
+      proxy: (url, options = {}) => this.request('/api/tools/proxy', this._normalizeParams('tools', 'proxy', url), options),
+      proxy2: (url, options = {}) => this.request('/api/tools/proxy2', this._normalizeParams('tools', 'proxy2', url), options),
+      spamOtp: (target, options) => this.request('/api/tools/spam-otp', this._normalizeParams('tools', 'spam-otp', target), options),
+      passwordGenerator: (params = {}, options = {}) => {
+        if (typeof params === 'number') params = { length: params };
+        return this.request('/api/tools/password-generator', { includeUppercase: 'true', includeLowercase: 'true', includeNumbers: 'true', includeSymbols: 'true', length: 16, ...params }, options);
+      }
+    };
+    this.canvas = {
+      brat: (text, options) => this.request('/api/canvas/brat', this._normalizeParams('canvas', 'brat', text), options)
+    };
+    this.v1 = {
+      chatCompletions: (body = {}, options = {}) => this.request('/v1/chat/completions', body, options),
+      models: (options = {}) => this.request('/v1/models', {}, options)
+    };
+    this.agent = {
+      chatCompletions: (body = {}, options = {}) => this.request('/v1/chat/completions', body, options),
+      models: (options = {}) => this.request('/v1/models', {}, options)
+    };
+  }
+}
+
+// Create default instance for zero-config calls
+const defaultInstance = new AlwaysCodex();
+
+// Support both CJS and ESM exports
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = defaultInstance;
+  module.exports.AlwaysCodex = AlwaysCodex;
+  module.exports.AlwaysCodexError = AlwaysCodexError;
+  module.exports.default = defaultInstance;
+}

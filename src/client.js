@@ -1,7 +1,7 @@
 /**
  * @file client.js
  * @description Core Universal SDK Client for AlwaysCodex REST API (https://api.alwayscodex.my.id)
- * Supports CJS and ESM environments natively, with auto-syncing of all categories & endpoints from openapi.json, binary media Buffer handling, and real-time SSE streaming (Agent API / Chat Completions).
+ * Supports CJS and ESM environments natively, with auto-syncing of all categories & endpoints from openapi.json, binary media Buffer handling, real-time SSE streaming (Agent API / Chat Completions), and callable instance factory (`const api = codex()`).
  */
 
 class AlwaysCodexError extends Error {
@@ -48,6 +48,51 @@ class AlwaysCodex {
     if (this.autoSync) {
       this.syncPromise = this.syncEndpoints().catch(() => {});
     }
+
+    // Enable auto-waiting and dynamic proxying so any category/action works immediately without await syncPromise
+    return new Proxy(this, {
+      get: (target, prop, receiver) => {
+        if (typeof prop === 'symbol' || prop.startsWith('_')) {
+          return Reflect.get(target, prop, receiver);
+        }
+        if (prop in target && typeof target[prop] !== 'object') {
+          const val = Reflect.get(target, prop, receiver);
+          return typeof val === 'function' ? val.bind(target) : val;
+        }
+
+        // Dynamic category helper proxy (wraps both predefined objects like target.ai and unlisted categories)
+        if (!target[prop] || typeof target[prop] === 'object') {
+          if (!target[prop]) target[prop] = {};
+          return new Proxy(target[prop], {
+            get: (catTarget, action) => {
+              if (action in catTarget && typeof catTarget[action] !== 'undefined') {
+                return catTarget[action];
+              }
+              return async (params = {}, reqOptions = {}) => {
+                // Embedded auto-sync wait so developer NEVER has to write `await codex.syncPromise`
+                if (target.autoSync && !target._synced && target.syncPromise) {
+                  await target.syncPromise.catch(() => {});
+                }
+                if (target.autoSync && !target._synced) {
+                  target._synced = true;
+                  await target.syncEndpoints().catch(() => {});
+                }
+
+                // If concrete method was added after sync, invoke it directly
+                if (action in catTarget && typeof catTarget[action] === 'function') {
+                  return catTarget[action](params, reqOptions);
+                }
+
+                const normalizedParams = target._normalizeParams(prop, action, params);
+                const endpointPath = `/api/${prop}/${action}`;
+                return target.request(endpointPath, normalizedParams, reqOptions);
+              };
+            }
+          });
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
   }
 
   /**
@@ -410,6 +455,11 @@ class AlwaysCodex {
       }
     }
 
+    // Embedded wait so developer NEVER has to write `await codex.syncPromise` before requests
+    if (this.autoSync && !this._synced && this.syncPromise) {
+      await this.syncPromise.catch(() => {});
+    }
+
     // If options.stream is true or options.onChunk callback is passed, delegate to streaming loop
     if (options.stream || options.onChunk || (typeof queryParams === 'object' && queryParams.stream === true && options.onChunk)) {
       const streamGen = this.stream(endpoint, params, options);
@@ -436,7 +486,6 @@ class AlwaysCodex {
       const contentType = response.headers.get('content-type') || '';
       let result;
 
-      // Handle SSE streams returned without explicit options.stream flag
       if (contentType.includes('text/event-stream')) {
         return this.stream(endpoint, params, options);
       } else if (contentType.includes('application/json')) {
@@ -522,11 +571,29 @@ class AlwaysCodex {
 // Create default instance for zero-config calls
 const defaultInstance = new AlwaysCodex();
 
+// Factory function so calling codex(options) returns a new AlwaysCodex instance
+function codexFactory(options = {}) {
+  return new AlwaysCodex(options);
+}
+
+// Wrap codexFactory in Proxy so calling `codex(...)` invokes factory, and accessing properties `codex.ai`, `codex.downloader` delegates directly to defaultInstance
+const exportedCodex = new Proxy(codexFactory, {
+  get: (target, prop, receiver) => {
+    if (prop === 'AlwaysCodex') return AlwaysCodex;
+    if (prop === 'AlwaysCodexError') return AlwaysCodexError;
+    const val = Reflect.get(defaultInstance, prop, receiver);
+    return typeof val === 'function' ? val.bind(defaultInstance) : val;
+  },
+  apply: (target, thisArg, argumentsList) => {
+    return codexFactory(...argumentsList);
+  }
+});
+
 // Support both CJS and ESM exports
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = defaultInstance;
-  module.exports.codex = defaultInstance;
+  module.exports = exportedCodex;
+  module.exports.codex = exportedCodex;
   module.exports.AlwaysCodex = AlwaysCodex;
   module.exports.AlwaysCodexError = AlwaysCodexError;
-  module.exports.default = defaultInstance;
+  module.exports.default = exportedCodex;
 }

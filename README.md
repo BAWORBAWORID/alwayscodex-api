@@ -17,42 +17,43 @@ npm install alwayscodex-api
 
 ---
 
-## 🚀 Cara Import & Penggunaan
+## 🚀 Cara Import & Penggunaan (`ESM` & `CJS`)
 
-Modul ini mendukung dua format standar Node.js secara otomatis: **CommonJS (`CJS`)** dan **ES Modules (`ESM`)**.
+Modul ini mendukung dua gaya pemanggilan: **langsung lewat instance default (`codex.ai...`)** atau **membuat instance baru sebagai fungsi (`const api = codex({ apiKey: '...' })`)**.  
+Proses sinkronisasi endpoint dari `/openapi.json` **sudah tertanam otomatis di dalam `client.js`**, sehingga Anda **TIDAK PERLU LAGI** menuliskan `await codex.syncPromise;`!
 
-### 1. CommonJS (`require`) — Untuk proyek Node.js biasa (`.cjs` atau tanpa `type: module`)
+### 1. ES Modules (`import`) — `.mjs` atau `type: module`
 ```javascript
-// Bisa dengan destructuring ataupun langsung:
-const { codex } = require('alwayscodex-api');
-// atau: const codex = require('alwayscodex-api');
+import codex from "alwayscodex-api";
+
+// 1. Membuat instance baru lewat pemanggilan fungsi codex()
+const api = codex(); // Bisa juga custom API Key: codex({ apiKey: 'YOUR_KEY' })
 
 async function run() {
-  await codex.syncPromise;
-
-  // 1. Memanggil AI (Mendukung input string atau object { text: '...' })
-  const ai = await codex.ai.deepseek('Halo DeepSeek');
+  // Panggilan langsung tanpa perlu await syncPromise!
+  const ai = await codex.ai.deepseek('Halo DeepSeek dari ESM');
   console.log(ai);
 
-  // 2. Memanggil Downloader
-  const tt = await codex.downloader.tiktok('https://vt.tiktok.com/xxxx');
-  console.log(tt);
+  // Atau lewat instance api()
+  const gpt = await api.ai.gpt4({ text: 'Siapa penemu lampu?' });
+  console.log(gpt);
 }
 run();
 ```
 
-### 2. ES Modules (`import`) — Untuk proyek modern (`.mjs` atau `type: module`)
+### 2. CommonJS (`require`) — `.cjs` atau Node.js standar
 ```javascript
-// Bisa dengan named import ataupun default import:
-import { codex } from 'alwayscodex-api';
-// atau: import codex from 'alwayscodex-api';
+const codex = require("alwayscodex-api");
+
+const api = codex();
 
 async function run() {
-  await codex.syncPromise;
+  // Langsung panggil AI / Downloader kapan saja
+  const ai = await codex.ai.deepseek('Halo DeepSeek dari CJS');
+  console.log(ai);
 
-  // Panggilan langsung dengan instance default
-  const gpt = await codex.ai.gpt4({ text: 'Siapa penemu lampu?' });
-  console.log(gpt);
+  const tt = await api.downloader.tiktok('https://vt.tiktok.com/xxxx');
+  console.log(tt);
 }
 run();
 ```
@@ -61,21 +62,20 @@ run();
 
 ## ⚡ Real-Time Streaming (`SSE`) & Agent API (`/v1/chat/completions`)
 
-Modul ini memiliki dukungan penuh terhadap **Server-Sent Events (`text/event-stream`)** dan **Agent API** (`/v1/models` & `/v1/chat/completions`). Anda bisa menerima teks chunk demi chunk secara *real-time* tanpa harus menunggu seluruh respons selesai.
+Modul ini memiliki dukungan penuh terhadap **Server-Sent Events (`text/event-stream`)** dan **Agent API** (`/v1/models` & `/v1/chat/completions`). Anda bisa menerima teks chunk demi chunk secara *real-time*.
 
 ### 1. Menggunakan `codex.stream()` (AsyncGenerator)
 ```javascript
-const { AlwaysCodex } = require('alwayscodex-api');
-const codex = new AlwaysCodex({ apiKey: 'YOUR_API_KEY' });
+const codex = require('alwayscodex-api');
+const api = codex({ apiKey: 'YOUR_API_KEY' });
 
 async function chatStream() {
-  const stream = codex.stream('/v1/chat/completions', {
+  const stream = api.stream('/v1/chat/completions', {
     model: 'cutad-agent',
     messages: [{ role: 'user', content: 'Buatkan puisi pendek.' }],
     stream: true
   });
 
-  // Iterasi chunk secara real-time:
   for await (const chunk of stream) {
     if (chunk.choices?.[0]?.delta?.content) {
       process.stdout.write(chunk.choices[0].delta.content);
@@ -103,16 +103,13 @@ await codex.agent.chatCompletions({
 ## 🖼️ Penanganan Respons Binary (Gambar/Audio/Video/File)
 
 Modul `alwayscodex-api` dilengkapi dengan detektor `Content-Type` otomatis.  
-Jika sebuah endpoint mengembalikan data biner (seperti gambar **JPG/PNG/WEBP**, audio **MP3/WAV**, video **MP4**, atau file **ZIP/PDF**), SDK tidak akan mengubahnya menjadi string berantakan, melainkan **langsung mengembalikan object `Buffer` (di Node.js) atau `ArrayBuffer` (di Browser)**!
+Jika sebuah endpoint mengembalikan data biner (seperti gambar **JPG/PNG/WEBP**, audio **MP3/WAV**, video **MP4**, atau file **ZIP/PDF**), SDK langsung mengembalikan object **Node.js `Buffer`** siap pakai!
 
-### Contoh Mengunduh & Menyimpan Gambar Canvas/Image HD:
 ```javascript
 const fs = require('fs');
 const codex = require('alwayscodex-api');
 
 async function generateAndSave() {
-  await codex.syncPromise;
-
   const imageBuffer = await codex.canvas.brat('Hello AlwaysCodex');
   fs.writeFileSync('output_brat.png', imageBuffer);
   console.log('✔ Gambar berhasil disimpan sebagai output_brat.png');
@@ -123,8 +120,6 @@ generateAndSave();
 ---
 
 ## ⚡ Shortcut Methods (`GET`, `POST`, `OPTIONS`, `UPLOAD`)
-
-Modul ini menyediakan *shortcut method* untuk segala jenis HTTP Verb dan pengunggahan file:
 
 ```javascript
 import codex from 'alwayscodex-api';
@@ -149,17 +144,17 @@ console.log('URL Download:', uploadRes.result.url);
 
 ### 1. Mengakses Website via CORS Proxy
 ```javascript
-// Akses web langsung melalui server proxy (Belanda/Jerman):
 const proxy = await codex.tools.proxy('https://ipinfo.io/json');
 console.log('IP Terdeteksi:', proxy.ip);
 ```
 
-### 2. Startup Auto-Load Semua Endpoint (`/openapi.json`)
-Saat modul pertama kali di-import atau saat `new AlwaysCodex()` dibuat, SDK otomatis memuat spesifikasi lengkap dari `GET https://api.alwayscodex.my.id/openapi.json`.  
-Seluruh **296+ endpoint** dan **25+ kategori** langsung didaftarkan menjadi method konkret secara otomatis pada object `codex`:
+### 2. Startup Auto-Load & Smart Parameter Mapping
+Saat modul di-load, SDK otomatis memuat spesifikasi lengkap dari `/openapi.json`. Seluruh **296+ endpoint** langsung dapat dipanggil dengan mudah:
 ```javascript
 codex.<kategori>.<action>(params)
 ```
+
+Semua parameter otomatis diselaraskan (baik string maupun `{ text: "..." }`) sesuai skema resmi dari OpenAPI!
 
 ---
 

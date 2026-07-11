@@ -155,4 +155,4 @@ Semua parameter otomatis diselaraskan (baik string maupun `{ text: "..." }`) ses
 ---
 
 ## 📄 License
-MIT © BAWORBAWORID
+MIT © AlwaysCodex

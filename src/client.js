@@ -525,6 +525,7 @@ const defaultInstance = new AlwaysCodex();
 // Support both CJS and ESM exports
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = defaultInstance;
+  module.exports.codex = defaultInstance;
   module.exports.AlwaysCodex = AlwaysCodex;
   module.exports.AlwaysCodexError = AlwaysCodexError;
   module.exports.default = defaultInstance;

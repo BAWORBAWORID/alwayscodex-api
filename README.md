@@ -23,8 +23,9 @@ Modul ini mendukung dua format standar Node.js secara otomatis: **CommonJS (`CJS
 
 ### 1. CommonJS (`require`) — Untuk proyek Node.js biasa (`.cjs` atau tanpa `type: module`)
 ```javascript
-const codex = require('alwayscodex-api');
-const fs = require('fs');
+// Bisa dengan destructuring ataupun langsung:
+const { codex } = require('alwayscodex-api');
+// atau: const codex = require('alwayscodex-api');
 
 async function run() {
   await codex.syncPromise;
@@ -42,7 +43,9 @@ run();
 
 ### 2. ES Modules (`import`) — Untuk proyek modern (`.mjs` atau `type: module`)
 ```javascript
-import codex, { AlwaysCodex } from 'alwayscodex-api';
+// Bisa dengan named import ataupun default import:
+import { codex } from 'alwayscodex-api';
+// atau: import codex from 'alwayscodex-api';
 
 async function run() {
   await codex.syncPromise;

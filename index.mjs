@@ -4,5 +4,6 @@
  */
 import client, { AlwaysCodex, AlwaysCodexError } from './src/client.js';
 
+export const codex = client;
 export { AlwaysCodex, AlwaysCodexError };
 export default client;

@@ -23,7 +23,6 @@ class AlwaysCodex {
    * Initialize AlwaysCodex API Client
    * @param {Object} [options={}] - Configuration options
    * @param {string} [options.apiKey=null] - Your AlwaysCodex API Key (optional for free endpoints)
-   * @param {string} [options.baseURL='https://api.alwayscodex.my.id'] - Base API URL
    * @param {number} [options.timeout=30000] - Request timeout in milliseconds
    * @param {boolean} [options.autoSync=true] - Automatically sync available endpoints on first call
    */
@@ -32,7 +31,7 @@ class AlwaysCodex {
       options = { apiKey: options };
     }
     this.apiKey = options.apiKey || options.apikey || null;
-    this.baseURL = (options.baseURL || 'https://api.alwayscodex.my.id').replace(/\/+$/, '');
+    this.baseURL = 'https://api.alwayscodex.my.id';
     this.timeout = options.timeout || 30000;
     this.autoSync = options.autoSync !== false;
 
